@@ -16,29 +16,32 @@ function showScreen(id) {
 }
 
 /* ── SETUP: COMPETITOR CHIPS ── */
+/* Use a standalone array — avoids any STATE reference issues */
+var _competitors = [];
+
 function addCompetitor() {
   var input = document.getElementById('comp-input');
   var v = input.value.trim();
-  if (!v || STATE.competitors.includes(v) || STATE.competitors.length >= 5) return;
-  STATE.competitors.push(v);
+  if (!v || _competitors.indexOf(v) !== -1 || _competitors.length >= 5) return;
+  _competitors.push(v);
   input.value = '';
   renderChips();
-  console.log('[DEBUG] competitors now:', JSON.stringify(STATE.competitors));
+  console.log('[DEBUG] _competitors now:', JSON.stringify(_competitors));
 }
 
 function removeCompetitor(c) {
-  STATE.competitors = STATE.competitors.filter(function(x) { return x !== c; });
+  _competitors = _competitors.filter(function(x) { return x !== c; });
   renderChips();
 }
 
 function renderChips() {
-  document.getElementById('chips').innerHTML = STATE.competitors.map(function(c) {
-    return (
-      '<div class="chip" data-brand="' + esc(c) + '">' + esc(c) +
-      '<span class="chip-x" onclick="removeCompetitor(\'' + c.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + '\')">&times;</span>' +
-      '</div>'
-    );
+  var el = document.getElementById('chips');
+  if (!el) return;
+  el.innerHTML = _competitors.map(function(c) {
+    var safe = c.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return '<div class="chip">' + esc(c) + '<span class="chip-x" onclick="_competitors=_competitors.filter(function(x){return x!==\''+safe+'\';});renderChips();">&times;</span></div>';
   }).join('');
+  console.log('[DEBUG] chips rendered for:', JSON.stringify(_competitors));
 }
 
 function showSetupError(msg) {
@@ -95,16 +98,9 @@ async function startPipeline() {
   if (!apiKey) { showSetupError('Please enter your Anthropic API key.'); return; }
   window.ANTHROPIC_KEY = apiKey;
 
-  /* Read competitors from data-brand attribute on each chip — reliable source of truth */
-  var chipEls = document.getElementById('chips').querySelectorAll('.chip[data-brand]');
-  var competitorsFromDOM = [];
-  chipEls.forEach(function(chip) {
-    var b = chip.getAttribute('data-brand');
-    if (b) competitorsFromDOM.push(b);
-  });
-  STATE.competitors = competitorsFromDOM;
-
-  console.log('[DEBUG] competitors from DOM:', JSON.stringify(STATE.competitors));
+  /* Use the standalone _competitors array — most reliable source */
+  STATE.competitors = _competitors.slice(); /* copy */
+  console.log('[DEBUG] competitors from _competitors:', JSON.stringify(STATE.competitors));
 
   STATE.brand    = brand;
   STATE.mentions = [];
@@ -159,6 +155,7 @@ function resetToSetup() {
   });
 
   window.ANTHROPIC_KEY = '';
+  _competitors      = [];
   STATE.brand       = '';
   STATE.competitors = [];
   STATE.mentions    = [];

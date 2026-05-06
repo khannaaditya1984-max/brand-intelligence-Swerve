@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Brand Intelligence Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+  <!-- SETUP -->
+  <div id="setup-screen" style="display:flex">
+    <div class="setup-logo">BRAND INTELLIGENCE &diams; POWERED BY CLAUDE</div>
+    <h1 class="setup-title">Your Brand.<br/><span>Live.</span></h1>
+    <p class="setup-sub">Three agents scan the web right now &mdash; sentiment scored, Share of Voice calculated, full PDF report ready to download.</p>
+    <div class="setup-card">
+      <label class="setup-label">Anthropic API Key</label>
+      <input class="setup-input" id="api-key-input" type="password" placeholder="sk-ant-api03-..." autocomplete="off"/>
+      <div class="setup-hint">Your key from <a href="https://console.anthropic.com/keys" target="_blank" rel="noopener">console.anthropic.com/keys</a> &mdash; only used in your browser, never stored or shared.</div>
+      <div class="setup-divider"></div>
+      <label class="setup-label">Primary Brand</label>
+      <input class="setup-input" id="brand-input" placeholder="e.g. Tineco" type="text"/>
+      <label class="setup-label">Competitor Brands <span class="setup-label-note">optional &middot; up to 5</span></label>
+      <div class="comp-row">
+        <input class="setup-input" id="comp-input" placeholder="e.g. Dyson" type="text"/>
+        <button class="btn-add" id="btn-add-comp" aria-label="Add competitor">+</button>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div id="setup-error" class="error-box" style="display:none"></div>
+      <button class="btn-run" id="btn-run"><span>&#x1F680;</span> Dispatch Agents</button>
+    </div>
+  </div>
+
+  <!-- PIPELINE -->
+  <div id="pipeline-screen" style="display:none">
+    <div class="pipeline-title" id="pipeline-title">Agents working&hellip;</div>
+    <div class="pipeline-agents" id="pipeline-agents"></div>
+  </div>
+
+  <!-- REPORT -->
+  <div id="report-screen" style="display:none">
+    <div class="report-header">
+      <div class="rh-left">
+        <div class="rh-agency">BRAND INTELLIGENCE REPORT</div>
+        <div class="rh-brand" id="rh-brand">&mdash;</div>
+        <div class="rh-period" id="rh-period">&mdash;</div>
+        <div class="rh-competitors" id="rh-competitors"></div>
+      </div>
+      <div class="rh-right" id="rh-right"></div>
+    </div>
+    <nav class="report-nav" id="report-nav"></nav>
+    <div id="report-body"></div>
+    <div class="download-bar">
+      <div>
+        <div class="dl-brand" id="dl-brand">Brand Intelligence Report</div>
+        <div class="dl-sub" id="dl-sub">Generated today</div>
+      </div>
+      <div class="dl-actions">
+        <button class="btn-new" id="btn-new">&larr; New Report</button>
+        <button class="btn-download" id="btn-download">&#x2B07; Download PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/agents.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/pdf.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

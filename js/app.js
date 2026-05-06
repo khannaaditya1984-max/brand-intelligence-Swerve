@@ -34,7 +34,7 @@ function removeCompetitor(c) {
 function renderChips() {
   document.getElementById('chips').innerHTML = STATE.competitors.map(function(c) {
     return (
-      '<div class="chip">' + esc(c) +
+      '<div class="chip" data-brand="' + esc(c) + '">' + esc(c) +
       '<span class="chip-x" onclick="removeCompetitor(\'' + c.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + '\')">&times;</span>' +
       '</div>'
     );
@@ -94,6 +94,17 @@ async function startPipeline() {
   var apiKey = (document.getElementById('api-key-input') || {value:''}).value.trim();
   if (!apiKey) { showSetupError('Please enter your Anthropic API key.'); return; }
   window.ANTHROPIC_KEY = apiKey;
+
+  /* Read competitors from data-brand attribute on each chip — reliable source of truth */
+  var chipEls = document.getElementById('chips').querySelectorAll('.chip[data-brand]');
+  var competitorsFromDOM = [];
+  chipEls.forEach(function(chip) {
+    var b = chip.getAttribute('data-brand');
+    if (b) competitorsFromDOM.push(b);
+  });
+  STATE.competitors = competitorsFromDOM;
+
+  console.log('[DEBUG] competitors from DOM:', JSON.stringify(STATE.competitors));
 
   STATE.brand    = brand;
   STATE.mentions = [];

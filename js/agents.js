@@ -1,5 +1,5 @@
 /* ================================================================
-   agents.js — Three Claude-powered agents (rate-limit safe)
+   agents.js — Three Claude-powered agents
    ================================================================ */
 
 function sleep(ms) {
@@ -34,191 +34,202 @@ async function callClaude(messages, tools, maxTokens) {
 }
 
 /* ── AGENT 01: FIELD OPERATIVE ── */
+/* Single call searching ALL brands at once — avoids multiple rate-limited calls */
 async function agentScrape(brand, competitors, onTrace) {
   onTrace('Dispatching to live web');
 
-  var year = new Date().getFullYear();
-  var allMentions = [];
-
-  /* Search each brand separately with a pause between each */
+  var year      = new Date().getFullYear();
   var allBrands = [brand].concat(competitors);
 
-  for (var bi = 0; bi < allBrands.length; bi++) {
-    var thisBrand = allBrands[bi];
-    var isPrimary = (bi === 0);
+  onTrace('Searching: ' + allBrands.join(', '));
 
-    if (bi > 0) {
-      onTrace('Pausing before next brand...');
-      await sleep(7000);
-    }
+  /* Tell the model exactly which brands to search and how to tag them */
+  var brandInstructions = allBrands.map(function(b, i) {
+    return (i + 1) + '. Search for "' + b + ' ' + year + '" — find ' + (i === 0 ? '5-6' : '2-3') + ' recent mentions. Tag each with brand="' + b + '"';
+  }).join('\n');
 
-    onTrace('Searching: ' + thisBrand);
+  var prompt =
+    'You are a brand intelligence operative. TODAY: ' + todayFormatted() + '.\n\n' +
+    'Use web_search to find recent mentions for each of these brands:\n' +
+    brandInstructions + '\n\n' +
+    'Run one search per brand (' + allBrands.length + ' searches total).\n\n' +
+    'After all searches, output ONLY a JSON array — no prose, no fences.\n' +
+    'Every object must follow this exact schema:\n' +
+    '{"brand":"<exact brand name from the list above>","source":"<outlet>","channel":"web" or "social","title":"<title>","snippet":"<paraphrased, max 12 words>","url":"<url>","date":"<YYYY-MM-DD or empty>"}\n\n' +
+    'CRITICAL: The "brand" field must be one of: ' + allBrands.map(function(b){ return '"' + b + '"'; }).join(', ') + '\n' +
+    'Do not use any other brand names. Do not mix up which brand a result belongs to.';
 
-    var maxItems = isPrimary ? 6 : 3;
-    var prompt =
-      'Search for recent mentions of "' + thisBrand + '" in ' + year + '. Run 1-2 searches.\n\n' +
-      'IMPORTANT: Every item in the array must have brand = "' + thisBrand + '" exactly.\n\n' +
-      'Reply with ONLY a JSON array, no other text:\n' +
-      '[{"brand":"' + thisBrand + '","source":"<outlet name>","channel":"web" or "social",' +
-      '"title":"<article title>","snippet":"<10 words max, paraphrased>","url":"<full url>","date":"<YYYY-MM-DD or empty>"}]\n\n' +
-      'Return max ' + maxItems + ' items. brand field must always be "' + thisBrand + '".';
+  var data = await callClaude(
+    [{ role: 'user', content: prompt }],
+    [{ type: 'web_search_20250305', name: 'web_search' }],
+    2000
+  );
 
-    try {
-      var data = await callClaude(
-        [{ role: 'user', content: prompt }],
-        [{ type: 'web_search_20250305', name: 'web_search' }],
-        isPrimary ? 1500 : 800
-      );
+  var searches = (data.content || []).filter(function(b) { return b.type === 'server_tool_use'; }).length;
+  onTrace('Completed ' + searches + ' web searches');
 
-      var found = safeParse(extractText(data), [], true);
-      if (Array.isArray(found) && found.length > 0) {
-        /* Force correct brand attribution in case model got it wrong */
-        found = found.map(function(m) {
-          m.brand = thisBrand;
-          return m;
-        });
-        allMentions = allMentions.concat(found);
-        onTrace('Found ' + found.length + ' mentions for ' + thisBrand);
-      } else {
-        onTrace('No results for ' + thisBrand + ' — skipping');
-      }
-    } catch (e) {
-      onTrace('Search failed for ' + thisBrand + ': ' + e.message.slice(0, 60));
-    }
+  var mentions = safeParse(extractText(data), [], true);
+  if (!Array.isArray(mentions) || mentions.length === 0) {
+    console.error('Agent 1 raw:', extractText(data).slice(0, 800));
+    throw new Error('No mentions found. Check browser console for raw response.');
   }
 
-  if (allMentions.length === 0) {
-    throw new Error('No mentions found. Try a well-known brand like Nike or Apple first.');
-  }
-
-  /* Log breakdown so we can verify attribution */
-  var breakdown = {};
-  allMentions.forEach(function(m) {
-    breakdown[m.brand] = (breakdown[m.brand] || 0) + 1;
+  /* Validate and fix brand attribution */
+  mentions = mentions.filter(function(m) { return m && m.title; });
+  mentions = mentions.map(function(m) {
+    /* Find the closest matching brand name (case-insensitive) */
+    var matched = allBrands.find(function(b) {
+      return b.toLowerCase() === (m.brand || '').toLowerCase();
+    });
+    /* If model got the brand wrong, try to infer from title/snippet */
+    if (!matched) {
+      matched = allBrands.find(function(b) {
+        var text = ((m.title || '') + ' ' + (m.snippet || '') + ' ' + (m.url || '')).toLowerCase();
+        return text.indexOf(b.toLowerCase()) !== -1;
+      });
+    }
+    m.brand = matched || brand; /* fallback to primary brand */
+    return m;
   });
-  onTrace('Breakdown: ' + Object.keys(breakdown).map(function(k) { return k + '=' + breakdown[k]; }).join(', '));
 
-  return allMentions;
+  /* Log breakdown */
+  var counts = {};
+  allBrands.forEach(function(b) { counts[b] = 0; });
+  mentions.forEach(function(m) { counts[m.brand] = (counts[m.brand] || 0) + 1; });
+  onTrace('Mentions: ' + allBrands.map(function(b) { return b + '=' + (counts[b] || 0); }).join(', '));
+
+  /* Warn if any brand got 0 mentions */
+  allBrands.forEach(function(b) {
+    if (!counts[b]) onTrace('WARNING: 0 mentions found for ' + b);
+  });
+
+  return mentions;
 }
 
 /* ── AGENT 02: SENTIMENT ANALYST ── */
 async function agentSentiment(brand, competitors, mentions, onTrace) {
-  onTrace('Pausing before sentiment analysis...');
+  onTrace('Pausing 8s before sentiment...');
   await sleep(8000);
-  onTrace('Scoring sentiment + Share of Voice');
+  onTrace('Scoring sentiment');
 
   var allBrands = [brand].concat(competitors);
 
-  /* Count actual mentions per brand from Agent 1 data */
-  var actualCounts = {};
-  allBrands.forEach(function(b) { actualCounts[b] = 0; });
+  /* Count mentions per brand — this is our source of truth for SoV */
+  var counts = {};
+  allBrands.forEach(function(b) { counts[b] = 0; });
   mentions.forEach(function(m) {
-    var mb = m.brand || brand;
-    /* Match brand name case-insensitively */
-    var matchedBrand = allBrands.find(function(b) {
-      return b.toLowerCase() === mb.toLowerCase();
-    });
-    if (matchedBrand) actualCounts[matchedBrand]++;
+    var b = allBrands.find(function(ab) { return ab.toLowerCase() === (m.brand || '').toLowerCase(); });
+    if (b) counts[b]++;
   });
+  var total = mentions.length || 1;
 
-  var totalMentions = mentions.length || 1;
-  onTrace('Mention counts: ' + Object.keys(actualCounts).map(function(k) { return k + '=' + actualCounts[k]; }).join(', '));
+  onTrace('SoV counts: ' + allBrands.map(function(b) { return b + '=' + counts[b]; }).join(', '));
 
-  /* Build trimmed mention list for scoring */
-  var trimmed = mentions.slice(0, 15).map(function(m, i) {
-    return i + '|' + (m.brand || brand) + '|' + (m.channel || 'web') + '|' + (m.snippet || m.title || '').slice(0, 60);
+  /* Build pipe-separated mention list for the model to score */
+  var lines = mentions.slice(0, 15).map(function(m, i) {
+    return i + '|' + m.brand + '|' + (m.channel || 'web') + '|' + (m.snippet || m.title || '').slice(0, 70);
   }).join('\n');
 
-  var brandList = allBrands.map(function(b) { return '"' + b + '"'; }).join(',');
-
-  /* Pre-compute SoV from actual counts so agent can't get it wrong */
-  var precomputedSoV = allBrands.map(function(b) {
-    var count = actualCounts[b] || 0;
-    var pct   = Math.round((count / totalMentions) * 100);
-    return '{"brand":"' + b + '","mention_count":' + count + ',"percent":' + pct + '}';
-  }).join(',');
-
   var prompt =
-    'Sentiment analysis. Brand: "' + brand + '"' +
-    (competitors.length ? ' vs ' + competitors.join(', ') : '') + '.\n\n' +
-    'Mentions (index|brand|channel|snippet):\n' + trimmed + '\n\n' +
-    'The share_of_voice is already calculated — use EXACTLY these values:\n' +
-    '[' + precomputedSoV + ']\n\n' +
-    'Return ONLY this JSON structure, no other text:\n' +
+    'Score the sentiment of each mention below for brand "' + brand + '".\n\n' +
+    'Mentions (index|brand|channel|text):\n' + lines + '\n\n' +
+    'Return ONLY valid JSON:\n' +
     '{\n' +
-    '"scored":[{"index":0,"brand":"x","sentiment":"positive","score":0.5,"rationale":"brief"}],\n' +
-    '"share_of_voice":[' + precomputedSoV + '],\n' +
-    '"sentiment_breakdown":{' + allBrands.map(function(b) {
-      return '"' + b + '":{"positive":0,"neutral":0,"negative":0,"net_sentiment":0}';
-    }).join(',') + '},\n' +
-    '"channel_split":{"web":0,"social":0},\n' +
-    '"themes":[{"theme":"x","sentiment":"positive","frequency":1}]\n' +
+    '  "scored": [{"index":<n>,"brand":"<brand>","sentiment":"positive"|"neutral"|"negative","score":<-1.0 to 1.0>,"rationale":"<8 words max based on the actual text>"}],\n' +
+    '  "sentiment_breakdown": {' + allBrands.map(function(b) { return '"' + b + '":{"positive":0,"neutral":0,"negative":0,"net_sentiment":0}'; }).join(',') + '},\n' +
+    '  "channel_split": {"web":' + mentions.filter(function(m){return m.channel==='web';}).length + ',"social":' + mentions.filter(function(m){return m.channel==='social';}).length + '},\n' +
+    '  "themes": [{"theme":"<topic>","sentiment":"positive"|"neutral"|"negative","frequency":<n>}]\n' +
     '}\n\n' +
-    'Fill in scored, sentiment_breakdown, channel_split and themes based on the mentions. ' +
-    'Do NOT change share_of_voice — use the values above exactly. Max 4 themes.';
+    'Score each mention based ONLY on its text. Max 4 themes from primary brand mentions.';
 
   var data = await callClaude([{ role: 'user', content: prompt }], null, 1500);
   var result = safeParse(extractText(data), null);
 
   if (!result || !result.scored) {
-    console.error('Agent 2 raw:', extractText(data).slice(0, 600));
+    console.error('Agent 2 raw:', extractText(data).slice(0, 800));
     throw new Error('Sentiment analyst returned malformed output.');
   }
 
-  /* Always enforce correct SoV from our own counts — never trust model for this */
+  /* ALWAYS compute SoV ourselves — never trust the model for this */
   result.share_of_voice = allBrands.map(function(b) {
-    var count = actualCounts[b] || 0;
-    var pct   = parseFloat(((count / totalMentions) * 100).toFixed(1));
-    return { brand: b, mention_count: count, percent: pct };
+    var count = counts[b] || 0;
+    return {
+      brand:         b,
+      mention_count: count,
+      percent:       parseFloat(((count / total) * 100).toFixed(1))
+    };
   });
 
+  /* Recompute sentiment_breakdown from scored results */
+  var breakdown = {};
+  allBrands.forEach(function(b) {
+    breakdown[b] = { positive: 0, neutral: 0, negative: 0, net_sentiment: 0 };
+  });
+  (result.scored || []).forEach(function(s) {
+    var b = allBrands.find(function(ab) { return ab.toLowerCase() === (s.brand || '').toLowerCase(); });
+    if (b && breakdown[b]) {
+      breakdown[b][s.sentiment] = (breakdown[b][s.sentiment] || 0) + 1;
+    }
+  });
+  allBrands.forEach(function(b) {
+    var bd = breakdown[b];
+    var tot = bd.positive + bd.neutral + bd.negative || 1;
+    bd.net_sentiment = parseFloat(((bd.positive - bd.negative) / tot).toFixed(2));
+  });
+  result.sentiment_breakdown = breakdown;
+
   var pri = result.share_of_voice.find(function(s) { return s.brand.toLowerCase() === brand.toLowerCase(); });
-  if (pri) onTrace('SoV for ' + brand + ': ' + pri.percent.toFixed(1) + '%');
+  if (pri) onTrace('SoV ' + brand + ': ' + pri.percent + '%');
   onTrace('Analysis complete');
   return result;
 }
 
 /* ── AGENT 03: BUREAU CHIEF ── */
 async function agentReport(brand, competitors, mentions, analysis, onTrace) {
-  onTrace('Pausing before report...');
+  onTrace('Pausing 8s before report...');
   await sleep(8000);
   onTrace('Synthesizing report');
 
-  var today = todayFormatted();
-  var sov   = (analysis.share_of_voice || []).map(function(s) {
-    return s.brand + ':' + s.percent.toFixed(0) + '%(' + s.mention_count + ')';
-  }).join(' ');
-  var pb     = getPrimaryBreakdown(brand) || {};
-  var themes = (analysis.themes || []).map(function(t) { return t.theme; }).join(', ');
+  var today  = todayFormatted();
+  var sov    = (analysis.share_of_voice || []).map(function(s) {
+    return s.brand + ': ' + s.percent + '% (' + s.mention_count + ' mentions)';
+  }).join(', ');
+  var pb     = (analysis.sentiment_breakdown || {})[brand] || {};
+  var themes = (analysis.themes || []).map(function(t) { return t.theme + '(' + t.sentiment + ')'; }).join(', ');
 
   var summary =
-    'Brand: ' + brand + ' | Date: ' + today + ' | Total mentions: ' + mentions.length + '\n' +
+    'Primary brand: ' + brand + '\n' +
+    'Report date: ' + today + '\n' +
+    'Total mentions collected: ' + mentions.length + '\n' +
     'Share of Voice: ' + sov + '\n' +
-    'Sentiment: pos=' + (pb.positive||0) + ' neu=' + (pb.neutral||0) + ' neg=' + (pb.negative||0) + ' net=' + (pb.net_sentiment||0) + '\n' +
-    'Themes: ' + (themes || 'none') +
-    (competitors.length ? '\nCompetitors tracked: ' + competitors.join(', ') : '');
+    'Sentiment for ' + brand + ': positive=' + (pb.positive||0) + ' neutral=' + (pb.neutral||0) + ' negative=' + (pb.negative||0) + ' net=' + (pb.net_sentiment||0) + '\n' +
+    'Key themes: ' + (themes || 'none') + '\n' +
+    (competitors.length ? 'Competitors: ' + competitors.join(', ') : '');
 
   var prompt =
-    'Write a brand intelligence briefing based on this data:\n' + summary + '\n\n' +
+    'Write a brand intelligence briefing based exactly on this data:\n\n' +
+    summary + '\n\n' +
     'Return ONLY valid JSON, no other text:\n' +
-    '{"headline":"<one punchy sentence about ' + brand + ' right now>",' +
-    '"executive_summary":"<2 sentences current state>",' +
-    '"key_findings":["<finding 1>","<finding 2>","<finding 3>"],' +
-    '"share_of_voice_analysis":"<2 sentences — reference the actual SoV percentages above>",' +
-    '"sentiment_analysis":"<2 sentences>",' +
-    '"themes_analysis":"<1 sentence>",' +
-    '"competitive_positioning":"<2 sentences comparing ' + brand + ' to ' + (competitors.join(', ') || 'the market') + '>",' +
-    '"recent_highlights":["<highlight 1>","<highlight 2>","<highlight 3>"],' +
-    '"earned_media_note":"<1 sentence>",' +
-    '"risks":["<risk 1>","<risk 2>"],' +
-    '"opportunities":["<opportunity 1>","<opportunity 2>"],' +
-    '"recommendations":["<rec 1>","<rec 2>","<rec 3>"]}';
+    '{\n' +
+    '  "headline": "<one sentence about ' + brand + ' right now>",\n' +
+    '  "executive_summary": "<2 sentences, present tense>",\n' +
+    '  "key_findings": ["<specific finding with numbers>","<finding 2>","<finding 3>"],\n' +
+    '  "share_of_voice_analysis": "<2 sentences referencing the exact SoV percentages above>",\n' +
+    '  "sentiment_analysis": "<2 sentences referencing the exact sentiment numbers above>",\n' +
+    '  "themes_analysis": "<1 sentence about the themes>",\n' +
+    '  "competitive_positioning": "<2 sentences comparing ' + brand + ' to ' + (competitors.join(' and ') || 'competitors') + ' using the SoV data>",\n' +
+    '  "recent_highlights": ["<real highlight from data>","<highlight 2>","<highlight 3>"],\n' +
+    '  "earned_media_note": "<1 sentence>",\n' +
+    '  "risks": ["<risk based on data>","<risk 2>"],\n' +
+    '  "opportunities": ["<opportunity based on data>","<opportunity 2>"],\n' +
+    '  "recommendations": ["<actionable rec 1>","<rec 2>","<rec 3>"]\n' +
+    '}';
 
   var data   = await callClaude([{ role: 'user', content: prompt }], null, 1500);
   var report = safeParse(extractText(data), null);
 
   if (!report) {
-    console.error('Agent 3 raw:', extractText(data).slice(0, 600));
+    console.error('Agent 3 raw:', extractText(data).slice(0, 800));
     throw new Error('Bureau chief returned malformed report.');
   }
 

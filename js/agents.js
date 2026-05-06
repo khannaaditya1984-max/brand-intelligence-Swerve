@@ -1,7 +1,5 @@
 /* ================================================================
-   agents.js — Three Claude-powered agents
-   API calls go to /api/claude (Netlify function) which adds the
-   Anthropic API key server-side from environment variables.
+   agents.js — Three Claude-powered agents (token-optimised)
    ================================================================ */
 
 async function callClaude(messages, tools, maxTokens) {
@@ -10,7 +8,7 @@ async function callClaude(messages, tools, maxTokens) {
 
   var body = {
     model:      'claude-sonnet-4-5',
-    max_tokens: maxTokens || 4000,
+    max_tokens: maxTokens || 2000,
     messages:   messages
   };
   if (tools) body.tools = tools;
@@ -27,9 +25,7 @@ async function callClaude(messages, tools, maxTokens) {
   });
 
   var data = await res.json();
-  if (data.error) {
-    throw new Error(data.error.message || JSON.stringify(data.error));
-  }
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
   return data;
 }
 
@@ -38,49 +34,35 @@ async function agentScrape(brand, competitors, onTrace) {
   onTrace('Dispatching to live web');
   onTrace('"' + brand + '"' + (competitors.length ? ' + ' + competitors.length + ' competitor(s)' : ''));
 
-  var today    = todayFormatted();
-  var year     = new Date().getFullYear();
+  var today = todayFormatted();
+  var year  = new Date().getFullYear();
   var compLine = competitors.length
-    ? 'Also search for these competitors: ' + competitors.join(', ') + '. Run a dedicated search for each one.'
+    ? 'Also search for: ' + competitors.join(', ') + ' (2-3 mentions each).'
     : '';
 
   var prompt =
-    'You are a brand intelligence field operative. TODAY IS ' + today + '.\n' +
-    'Use the web_search tool to find CURRENT mentions of "' + brand + '" from the last 30 days.\n' +
-    'Always include the year ' + year + ' in search queries for fresh results.\n' +
-    'Cover: news, blogs, reviews, Reddit, Twitter/X, LinkedIn, YouTube, TikTok.\n' +
-    'Run 4-6 searches total.\n' +
-    compLine + '\n\n' +
-    'Suggested searches:\n' +
-    '  "' + brand + ' ' + year + '"\n' +
-    '  "' + brand + ' ' + year + ' review"\n' +
-    '  "' + brand + ' reddit ' + year + '"\n' +
-    '  "' + brand + ' news ' + year + '"\n\n' +
-    'CRITICAL OUTPUT RULE:\n' +
-    'Your FINAL message must be ONLY a valid JSON array — no prose, no markdown fences.\n' +
-    'Schema for each object:\n' +
-    '{"brand":"<name>","source":"<outlet>","channel":"web" or "social","title":"<title>","snippet":"<paraphrased sentence max 25 words>","url":"<url>","date":"<YYYY-MM-DD or empty>"}\n\n' +
-    'Target: 8-12 mentions for the primary brand, 3-5 per competitor.\n' +
-    'ALWAYS paraphrase snippets — never copy text verbatim.';
+    'Brand intelligence operative. TODAY: ' + today + '.\n' +
+    'Find CURRENT mentions of "' + brand + '" from last 30 days. Use year ' + year + ' in queries.\n' +
+    compLine + '\n' +
+    'Run 3 searches max. Cover news, Reddit, social media.\n\n' +
+    'OUTPUT: ONLY a JSON array, no prose, no fences.\n' +
+    'Each item: {"brand":"<n>","source":"<s>","channel":"web"|"social","title":"<t>","snippet":"<max 15 words paraphrased>","url":"<u>","date":"<YYYY-MM-DD or empty>"}\n' +
+    'Max 8 items for primary brand, 3 per competitor. Short snippets only.';
 
   var data = await callClaude(
     [{ role: 'user', content: prompt }],
     [{ type: 'web_search_20250305', name: 'web_search' }],
-    6000
+    2000
   );
 
   var searches = (data.content || []).filter(function(b) { return b.type === 'server_tool_use'; }).length;
-  if (searches) onTrace('Completed ' + searches + ' live searches');
-  onTrace('Compiling mention dossier');
+  if (searches) onTrace('Completed ' + searches + ' searches');
+  onTrace('Compiling dossier');
 
   var mentions = safeParse(extractText(data), [], true);
   if (!Array.isArray(mentions) || mentions.length === 0) {
-    console.error('Raw agent 1 response:', extractText(data).slice(0, 800));
-    throw new Error(
-      'Field operative returned no mentions. ' +
-      'Try a more widely-covered brand. ' +
-      'Check browser console (F12) for raw response.'
-    );
+    console.error('Agent 1 raw:', extractText(data).slice(0, 600));
+    throw new Error('No mentions found. Try a well-known brand name.');
   }
 
   onTrace('Filed ' + mentions.length + ' mentions');
@@ -89,35 +71,33 @@ async function agentScrape(brand, competitors, onTrace) {
 
 /* ── AGENT 02: SENTIMENT ANALYST ── */
 async function agentSentiment(brand, competitors, mentions, onTrace) {
-  onTrace('Reviewing mention dossier');
   onTrace('Scoring sentiment + Share of Voice');
 
   var allBrands = [brand].concat(competitors);
 
-  var prompt =
-    'You are a brand intelligence sentiment analyst.\n' +
-    'Analyze these mentions for "' + brand + '"' +
-    (competitors.length ? ' and competitors: ' + competitors.join(', ') : '') + '.\n\n' +
-    'Mentions:\n' + JSON.stringify(mentions, null, 2) + '\n\n' +
-    'Return ONLY a valid JSON object — no prose, no fences:\n' +
-    '{\n' +
-    '  "scored": [{"index":<int>,"brand":"<name>","sentiment":"positive"|"neutral"|"negative","score":<-1 to 1>,"rationale":"<one sentence>"}],\n' +
-    '  "share_of_voice": [{"brand":"<name>","mention_count":<int>,"percent":<0-100>}],\n' +
-    '  "sentiment_breakdown": {"<brand>":{"positive":<int>,"neutral":<int>,"negative":<int>,"avg_score":<num>,"net_sentiment":<num>}},\n' +
-    '  "channel_split": {"web":<int>,"social":<int>},\n' +
-    '  "themes": [{"theme":"<short label>","sentiment":"positive"|"neutral"|"negative","frequency":<int>}]\n' +
-    '}\n\n' +
-    'Rules:\n' +
-    '- share_of_voice must include ALL brands: ' + allBrands.map(function(b) { return '"' + b + '"'; }).join(', ') + '\n' +
-    '- Percents must sum to ~100\n' +
-    '- Include every brand in sentiment_breakdown (use 0s if no mentions)\n' +
-    '- 4-6 themes from PRIMARY brand mentions only';
+  // Trim mentions to keep tokens low — just brand, channel, snippet
+  var trimmed = mentions.slice(0, 20).map(function(m, i) {
+    return { i: i, brand: m.brand, channel: m.channel, snippet: (m.snippet || '').slice(0, 80) };
+  });
 
-  var data = await callClaude([{ role: 'user', content: prompt }], null, 3000);
+  var prompt =
+    'Sentiment analyst. Analyze mentions for "' + brand + '"' +
+    (competitors.length ? ' vs ' + competitors.join(', ') : '') + '.\n\n' +
+    'Mentions: ' + JSON.stringify(trimmed) + '\n\n' +
+    'Return ONLY valid JSON, no prose:\n' +
+    '{"scored":[{"index":<i>,"brand":"<b>","sentiment":"positive"|"neutral"|"negative","score":<-1to1>,"rationale":"<10 words>"}],' +
+    '"share_of_voice":[{"brand":"<b>","mention_count":<n>,"percent":<0-100>}],' +
+    '"sentiment_breakdown":{"<brand>":{"positive":<n>,"neutral":<n>,"negative":<n>,"net_sentiment":<n>}},' +
+    '"channel_split":{"web":<n>,"social":<n>},' +
+    '"themes":[{"theme":"<short>","sentiment":"positive"|"neutral"|"negative","frequency":<n>}]}\n\n' +
+    'share_of_voice must include: ' + allBrands.map(function(b) { return '"'+b+'"'; }).join(',') + '. ' +
+    'Percents sum to 100. Max 5 themes.';
+
+  var data = await callClaude([{ role: 'user', content: prompt }], null, 2000);
   var result = safeParse(extractText(data), null);
   if (!result || !result.scored) {
-    console.error('Raw agent 2 response:', extractText(data).slice(0, 800));
-    throw new Error('Sentiment analyst returned malformed output. Check browser console.');
+    console.error('Agent 2 raw:', extractText(data).slice(0, 600));
+    throw new Error('Sentiment analyst returned malformed output.');
   }
 
   var sov = result.share_of_voice || [];
@@ -129,38 +109,38 @@ async function agentSentiment(brand, competitors, mentions, onTrace) {
 
 /* ── AGENT 03: BUREAU CHIEF ── */
 async function agentReport(brand, competitors, mentions, analysis, onTrace) {
-  onTrace('Bureau chief synthesizing live intelligence');
+  onTrace('Synthesizing report');
 
   var today = todayFormatted();
+  var sov   = (analysis.share_of_voice || []).map(function(s) {
+    return s.brand + ' ' + s.percent.toFixed(1) + '% (' + s.mention_count + ')';
+  }).join(', ');
+  var pb = (analysis.sentiment_breakdown || {})[brand] || {};
+
+  // Send a compact summary instead of the full analysis object
+  var summary =
+    'Brand: ' + brand + '. Date: ' + today + '.\n' +
+    'Total mentions: ' + mentions.length + '.\n' +
+    'SoV: ' + sov + '.\n' +
+    'Sentiment: +' + (pb.positive||0) + ' neutral:' + (pb.neutral||0) + ' -' + (pb.negative||0) + ' net:' + (pb.net_sentiment||0) + '.\n' +
+    'Themes: ' + (analysis.themes||[]).map(function(t){return t.theme+'('+t.sentiment+')';}).join(', ') + '.\n' +
+    (competitors.length ? 'Competitors: ' + competitors.join(', ') + '.' : '');
 
   var prompt =
-    'You are the bureau chief writing a CURRENT brand intelligence briefing for "' + brand + '"' +
-    (competitors.length ? ', benchmarked against: ' + competitors.join(', ') : '') + '.\n' +
-    'Today is ' + today + '. Data gathered TODAY — write in present tense throughout.\n\n' +
-    'DATA:\n' +
-    JSON.stringify({ generatedOn: today, totalMentions: mentions.length, analysis: analysis }, null, 2) + '\n\n' +
-    'Return ONLY a valid JSON object — no prose, no fences:\n' +
-    '{\n' +
-    '  "headline":                "<one striking present-tense sentence about the brand RIGHT NOW>",\n' +
-    '  "executive_summary":       "<2-3 sentences — current state, present tense>",\n' +
-    '  "key_findings":            ["<f1>","<f2>","<f3>","<f4>"],\n' +
-    '  "share_of_voice_analysis": "<2-3 sentences citing actual numbers>",\n' +
-    '  "sentiment_analysis":      "<2-3 sentences on current sentiment>",\n' +
-    '  "themes_analysis":         "<2-3 sentences on what people discuss NOW>",\n' +
-    '  "competitive_positioning": "<2-3 sentences vs competitors today>",\n' +
-    '  "recent_highlights":       ["<notable current story 1>","<story 2>","<story 3>"],\n' +
-    '  "earned_media_note":       "<1-2 sentences on media coverage>",\n' +
-    '  "risks":                   ["<risk 1>","<risk 2>"],\n' +
-    '  "opportunities":           ["<opp 1>","<opp 2>"],\n' +
-    '  "recommendations":         ["<rec 1>","<rec 2>","<rec 3>"]\n' +
-    '}\n\n' +
-    'Cite actual numbers. Present tense. Confident analyst voice. No filler.';
+    'Bureau chief. Write a CURRENT brand intelligence briefing.\n\n' +
+    summary + '\n\n' +
+    'Return ONLY valid JSON, no prose:\n' +
+    '{"headline":"<one sentence now>","executive_summary":"<2 sentences>","key_findings":["<f1>","<f2>","<f3>"],' +
+    '"share_of_voice_analysis":"<2 sentences with numbers>","sentiment_analysis":"<2 sentences>",' +
+    '"themes_analysis":"<1 sentence>","competitive_positioning":"<2 sentences>",' +
+    '"recent_highlights":["<h1>","<h2>","<h3>"],"earned_media_note":"<1 sentence>",' +
+    '"risks":["<r1>","<r2>"],"opportunities":["<o1>","<o2>"],"recommendations":["<rec1>","<rec2>","<rec3>"]}';
 
-  var data = await callClaude([{ role: 'user', content: prompt }], null, 3000);
+  var data = await callClaude([{ role: 'user', content: prompt }], null, 2000);
   var report = safeParse(extractText(data), null);
   if (!report) {
-    console.error('Raw agent 3 response:', extractText(data).slice(0, 800));
-    throw new Error('Bureau chief returned malformed report. Check browser console.');
+    console.error('Agent 3 raw:', extractText(data).slice(0, 600));
+    throw new Error('Bureau chief returned malformed report.');
   }
 
   onTrace('Briefing finalized');

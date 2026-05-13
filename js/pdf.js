@@ -186,6 +186,80 @@ function downloadPDF() {
     bulletList(report.recommendations, [10, 22, 40]);
   }
 
+  /* ── TESTIMONIALS ── */
+  if (report.testimonial_insights) {
+    sectionHead('Customer Testimonials', [245, 158, 11]);
+    para(report.testimonial_insights);
+  }
+  var testimonials = analysis.top_testimonials || [];
+  testimonials.slice(0, 3).forEach(function(t) {
+    need(50);
+    doc.setFillColor(241, 245, 249);
+    doc.rect(M, y, W - 2 * M, 36, 'F');
+    doc.setDrawColor(30, 77, 183);
+    doc.setLineWidth(2);
+    doc.line(M, y, M, y + 36);
+    doc.setFont('times', 'italic'); doc.setFontSize(10); doc.setTextColor(51, 65, 85);
+    var qlines = doc.splitTextToSize('"' + (t.quote || '') + '"', W - 2 * M - 16);
+    qlines.slice(0, 2).forEach(function(l) { doc.text(l, M + 10, y + 12); y += 12; });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(100, 116, 139);
+    doc.text('— ' + (t.source || 'Customer') + ' · ' + (t.sentiment || ''), M + 10, y + 8);
+    y += 20;
+  });
+  y += 8;
+
+  /* ── RETAIL ANALYSIS ── */
+  if (report.retail_analysis) {
+    sectionHead('Retail Analysis — Walmart / Target / Kohls', [0, 113, 206]);
+    para(report.retail_analysis);
+  }
+  var retailSent = analysis.retail_sentiment || {};
+  if (Object.keys(retailSent).length) {
+    need(60);
+    var retailers = [['Walmart', retailSent.walmart], ['Target', retailSent.target], ['Kohls', retailSent.kohls]];
+    var rw = (W - 2 * M) / 3;
+    retailers.forEach(function(r, i) {
+      var x = M + i * rw;
+      var sentColor = r[1] === 'positive' ? [16,185,129] : r[1] === 'negative' ? [239,68,68] : [100,116,139];
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(10, 22, 40);
+      t(r[0], x + 10, y + 14);
+      doc.setFillColor(sentColor[0], sentColor[1], sentColor[2]);
+      doc.roundedRect(x + 10, y + 18, 60, 14, 3, 3, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(255, 255, 255);
+      t(r[1] || 'no data', x + 14, y + 28);
+    });
+    y += 50;
+  }
+
+  /* ── MARKETING RECOMMENDATIONS ── */
+  var mktRecs = report.marketing_recommendations || [];
+  if (mktRecs.length) {
+    sectionHead('Digital Marketing Recommendations', [30, 77, 183]);
+    mktRecs.forEach(function(r) {
+      need(60);
+      var channelColors = {
+        'Retail Media (Walmart Connect / Target Roundel / Kohls)': [0, 113, 206],
+        'Paid Social — Meta & TikTok': [139, 92, 246],
+        'Google Search & Shopping':    [234, 67, 53],
+        'Creative Direction':           [245, 158, 11],
+        'Programmatic & Retargeting':   [30, 77, 183]
+      };
+      var cc = channelColors[r.channel] || [30, 77, 183];
+      doc.setFillColor(cc[0], cc[1], cc[2]);
+      doc.rect(M, y, W - 2 * M, 14, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+      t((r.channel || '').toUpperCase(), M + 8, y + 10);
+      y += 18;
+      doc.setFont('times', 'normal'); doc.setFontSize(11); doc.setTextColor(10, 22, 40);
+      var recLines = doc.splitTextToSize(r.recommendation || '', W - 2 * M);
+      recLines.forEach(function(l) { need(15); t(l, M, y); y += 14; });
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(100, 116, 139);
+      var ratLines = doc.splitTextToSize('Why: ' + (r.rationale || ''), W - 2 * M);
+      ratLines.forEach(function(l) { need(13); t(l, M, y); y += 12; });
+      y += 8;
+    });
+  }
+
   /* ── SOURCES APPENDIX ── */
   doc.addPage();
   y = M;

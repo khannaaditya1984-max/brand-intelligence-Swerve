@@ -266,7 +266,8 @@ function buildSentimentSection() {
 function buildEarnedSection() {
   var brand    = STATE.brand;
   var mentions = STATE.mentions;
-  var report   = STATE.report || {};
+  var report   = STATE.report   || {};
+  var analysis = STATE.analysis || {};
 
   var web = mentions.filter(function(m) {
     return m.channel === 'web' && m.brand && m.brand.toLowerCase() === brand.toLowerCase();
@@ -351,7 +352,8 @@ function buildEarnedSection() {
 function buildInfluencerSection() {
   var brand    = STATE.brand;
   var mentions = STATE.mentions;
-  var report   = STATE.report || {};
+  var report   = STATE.report   || {};
+  var analysis = STATE.analysis || {};
 
   var social = mentions.filter(function(m) {
     return m.channel === 'social' && m.brand && m.brand.toLowerCase() === brand.toLowerCase();

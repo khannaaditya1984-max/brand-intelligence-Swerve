@@ -118,45 +118,45 @@ async function agentScrape(brand, competitors, onTrace) {
   // ── 1. News & web mentions for primary brand ──
   onTrace('Searching news: ' + brand);
   var newsResults = await runSearch(
-    'Search for recent news articles about "' + brand + '" in ' + year + '. Run 2 searches.\n' +
-    'Output ONLY a JSON array. Each item: ' + schema + '\nSet channel="web" type="news". Max 5 items. Paraphrase snippets.',
-    brand, 1500
+    'Search "' + brand + ' ' + year + '" news. Run 1 search.\n' +
+    'Output ONLY JSON array. Each: ' + schema + '\nchannel="web" type="news". Max 4 items.',
+    brand, 1000
   );
   allMentions = allMentions.concat(newsResults);
   onTrace('News: ' + newsResults.length + ' results');
 
-  await sleep(10000);
+  await sleep(15000);
 
   // ── 2. Social media mentions ──
   onTrace('Searching social: Reddit, TikTok, YouTube');
   var socialResults = await runSearch(
-    'Search for "' + brand + '" mentions on Reddit site:reddit.com, then "' + brand + '" TikTok reviews, then "' + brand + '" YouTube review ' + year + '.\n' +
-    'Output ONLY a JSON array. Each item: ' + schema + '\nSet channel="social". Include platform as source (Reddit/TikTok/YouTube). Max 5 items. Paraphrase snippets.',
-    brand, 1500
+    'Search "' + brand + ' reddit review ' + year + '". Run 1 search.\n' +
+    'Output ONLY JSON array. Each: ' + schema + '\nchannel="social" type="social". Max 3 items.',
+    brand, 800
   );
   allMentions = allMentions.concat(socialResults);
   onTrace('Social: ' + socialResults.length + ' results');
 
-  await sleep(10000);
+  await sleep(15000);
 
   // ── 3. Retailer mentions (Walmart, Target, Kohls) ──
   onTrace('Searching retailers: Walmart, Target, Kohls');
   var retailResults = await runSearch(
-    'Search for "' + brand + ' walmart", then "' + brand + ' target", then "' + brand + ' kohls".\n' +
-    'Output ONLY a JSON array. Each item: ' + schema + '\nSet channel="web" type="retail". Source = the retailer name. Max 5 items. Paraphrase snippets.',
-    brand, 1500
+    'Search "' + brand + ' walmart OR target OR kohls". Run 1 search.\n' +
+    'Output ONLY JSON array. Each: ' + schema + '\nchannel="web" type="retail". Max 3 items.',
+    brand, 800
   );
   allMentions = allMentions.concat(retailResults);
   onTrace('Retail: ' + retailResults.length + ' results');
 
-  await sleep(10000);
+  await sleep(15000);
 
   // ── 4. Customer reviews & testimonials ──
   onTrace('Searching reviews & testimonials');
   var reviewResults = await runSearch(
-    'Search for "' + brand + ' review" customer opinions, then "' + brand + ' reddit review" user experiences.\n' +
-    'Output ONLY a JSON array. Each item: ' + schema + '\nSet channel="social" type="review". Focus on genuine customer quotes and experiences. Max 5 items. Paraphrase snippets.',
-    brand, 1500
+    'Search "' + brand + ' customer review". Run 1 search.\n' +
+    'Output ONLY JSON array. Each: ' + schema + '\nchannel="social" type="review". Max 3 items.',
+    brand, 800
   );
   allMentions = allMentions.concat(reviewResults);
   onTrace('Reviews: ' + reviewResults.length + ' results');
@@ -165,7 +165,7 @@ async function agentScrape(brand, competitors, onTrace) {
   for (var i = 0; i < competitors.length; i++) {
     var comp = competitors[i];
     onTrace('Pausing 12s then searching: ' + comp);
-    await sleep(12000);
+    await sleep(15000);
     var compResults = await runSearch(
       'Search for recent news about "' + comp + '" in ' + year + '. Run 1 search.\n' +
       'Output ONLY a JSON array. Each item: ' + schema + '\nMax 3 items. Paraphrase snippets.',
@@ -195,7 +195,7 @@ async function agentScrape(brand, competitors, onTrace) {
 /* ── AGENT 02: SENTIMENT + SOV ── */
 async function agentSentiment(brand, competitors, mentions, onTrace) {
   onTrace('Pausing 12s before sentiment...');
-  await sleep(12000);
+  await sleep(15000);
   onTrace('Scoring sentiment');
 
   var allBrands = [brand].concat(competitors);
@@ -291,7 +291,7 @@ async function agentSentiment(brand, competitors, mentions, onTrace) {
 /* ── AGENT 03: BUREAU CHIEF ── */
 async function agentReport(brand, competitors, mentions, analysis, onTrace) {
   onTrace('Pausing 12s before report...');
-  await sleep(12000);
+  await sleep(15000);
   onTrace('Writing report');
 
   var today  = todayFormatted();

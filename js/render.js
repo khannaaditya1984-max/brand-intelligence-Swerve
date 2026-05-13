@@ -293,6 +293,29 @@ function buildEarnedSection() {
     return '<div class="finding-row"><div class="finding-dot" style="background:#10b981"></div><p>' + esc(o) + '</p></div>';
   }).join('');
 
+  /* Testimonials */
+  var testimonials = (report.top_testimonials || analysis.top_testimonials || []);
+  var testimonialsHtml = testimonials.length
+    ? testimonials.map(function(t) {
+        return '<div style="padding:14px 16px;border-left:3px solid var(--blue);margin-bottom:12px;background:var(--gray-50);border-radius:0 8px 8px 0">' +
+          '<p style="font-size:13px;font-style:italic;color:var(--gray-700);line-height:1.6">"' + esc(t.quote || '') + '"</p>' +
+          '<p style="font-size:11px;color:var(--gray-500);margin-top:6px">— ' + esc(t.source || 'Customer') + ' · <span class="badge ' + (t.sentiment||'neutral') + '">' + (t.sentiment||'') + '</span></p>' +
+        '</div>';
+      }).join('')
+    : '<p style="color:var(--gray-500);font-size:13px">No customer reviews found in this search.</p>';
+
+  /* Retail cards */
+  var retailMentions = mentions.filter(function(m) { return m.type === 'retail' && m.brand && m.brand.toLowerCase() === brand.toLowerCase(); });
+  var retailCards = retailMentions.length
+    ? retailMentions.map(function(m) {
+        return '<div class="highlight-card">' +
+          '<div class="hc-outlet" style="background:#0071ce"><span>' + esc(m.source) + '</span><span class="hc-date">' + esc(m.date||'') + '</span></div>' +
+          '<div class="hc-body"><div class="hc-title">' + esc(m.title) + '</div><div class="hc-snippet">' + esc(m.snippet) + '</div>' +
+          (m.url ? '<a class="hc-link" href="' + esc(m.url) + '" target="_blank" rel="noopener">↗ ' + esc(m.url.slice(0,55)) + '…</a>' : '') +
+          '</div></div>';
+      }).join('')
+    : '';
+
   var sec = document.createElement('div');
   sec.className = 'report-section';
   sec.innerHTML =
@@ -302,11 +325,19 @@ function buildEarnedSection() {
       '<div class="section-badge">' + web.length + ' Stories</div>' +
     '</div>' +
 
-    '<div class="info-card"><p>' + esc(report.earned_media_note || report.sentiment_analysis || '') + '</p></div>' +
+    '<div class="info-card"><p>' + esc(report.earned_media_note || '') + '</p></div>' +
 
     '<div class="highlights-grid">' +
-      (cards || '<p style="color:var(--gray-500);padding:16px">No web mentions found for this brand in the live search.</p>') +
+      (cards || '<p style="color:var(--gray-500);padding:16px">No web news found.</p>') +
     '</div>' +
+
+    (retailCards ? '<div class="section-title" style="font-size:16px;margin:24px 0 14px">Retailer Coverage</div>' +
+      '<div class="info-card"><p>' + esc(report.retail_analysis || '') + '</p></div>' +
+      '<div class="highlights-grid">' + retailCards + '</div>' : '') +
+
+    '<div class="section-title" style="font-size:16px;margin:24px 0 14px">Customer Testimonials</div>' +
+    '<div class="info-card"><p>' + esc(report.testimonial_insights || '') + '</p></div>' +
+    '<div style="margin-bottom:24px">' + testimonialsHtml + '</div>' +
 
     '<div class="two-col">' +
       '<div class="info-card"><div class="info-card-title" style="color:#ef4444">⚠ Risks</div>' + risks + '</div>' +
@@ -349,6 +380,28 @@ function buildInfluencerSection() {
     return '<div class="rec-row"><div class="rec-num">' + (i + 1) + '</div><div class="rec-text">' + esc(r) + '</div></div>';
   }).join('');
 
+  /* Marketing recommendations */
+  var mktRecs = (report.marketing_recommendations || []);
+  var mktRecsHtml = mktRecs.length
+    ? mktRecs.map(function(r) {
+        var channelColors = {
+          'Retail Media (Walmart Connect / Target Roundel / Kohls)': '#0071ce',
+          'Paid Social — Meta & TikTok': '#8b5cf6',
+          'Google Search & Shopping': '#ea4335',
+          'Creative Direction': '#f59e0b',
+          'Programmatic & Retargeting': '#1e4db7'
+        };
+        var color = channelColors[r.channel] || 'var(--blue)';
+        return '<div style="border:1px solid var(--gray-200);border-radius:10px;overflow:hidden;margin-bottom:12px">' +
+          '<div style="background:' + color + ';color:#fff;padding:10px 16px;font-size:12px;font-weight:700;letter-spacing:.04em">' + esc(r.channel || '') + '</div>' +
+          '<div style="padding:14px 16px">' +
+            '<p style="font-size:14px;font-weight:600;color:var(--navy);margin-bottom:6px">' + esc(r.recommendation || '') + '</p>' +
+            '<p style="font-size:12px;color:var(--gray-500);line-height:1.5">' + esc(r.rationale || '') + '</p>' +
+          '</div>' +
+        '</div>';
+      }).join('')
+    : '<p style="color:var(--gray-500);font-size:13px">No marketing recommendations generated.</p>';
+
   var sec = document.createElement('div');
   sec.className = 'report-section';
   sec.innerHTML =
@@ -372,7 +425,9 @@ function buildInfluencerSection() {
     '<div class="info-card" style="margin-top:24px">' +
       '<div class="info-card-title">Strategic Recommendations</div>' +
       recs +
-    '</div>';
+    '</div>' +
+    '<div class="section-title" style="font-size:16px;margin:24px 0 14px">Marketing Recommendations</div>' +
+    mktRecsHtml;
 
   return sec;
 }

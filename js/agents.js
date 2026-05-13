@@ -110,6 +110,11 @@ async function runSearch(searchPrompt, brandName, maxTok) {
 
 /* ── AGENT 01: FIELD OPERATIVE ── */
 async function agentScrape(brand, competitors, onTrace) {
+  /* Normalise brand names — capitalise first letter of each word */
+  brand = brand.split(' ').map(function(w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(' ');
+  competitors = competitors.map(function(c) {
+    return c.split(' ').map(function(w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(' ');
+  });
   onTrace('Starting intelligence sweep');
   var year = new Date().getFullYear();
   var allMentions = [];
@@ -130,8 +135,8 @@ async function agentScrape(brand, competitors, onTrace) {
   // ── 2. Social media mentions ──
   onTrace('Searching social: Reddit, TikTok, YouTube');
   var socialResults = await runSearch(
-    'Search "' + brand + ' reddit review ' + year + '". Run 1 search.\n' +
-    'Output ONLY JSON array. Each: ' + schema + '\nchannel="social" type="social". Max 3 items.',
+    'Search site:reddit.com "' + brand + '" vacuum review. Run 1 search.\n' +
+    'Output ONLY JSON array. Each: ' + schema + '\nchannel="social" type="social". Source must be Reddit. Max 3 items.',
     brand, 800
   );
   allMentions = allMentions.concat(socialResults);
@@ -307,7 +312,7 @@ async function agentReport(brand, competitors, mentions, analysis, onTrace) {
     'DATA:\n' +
     '- Total mentions: ' + mentions.length + ' (news=' + (typeSplit.news||0) + ' social=' + (typeSplit.social||0) + ' reviews=' + (typeSplit.review||0) + ' retail=' + (typeSplit.retail||0) + ')\n' +
     '- Share of Voice: ' + sov + '\n' +
-    '- Sentiment: pos=' + (pb.positive||0) + ' neu=' + (pb.neutral||0) + ' neg=' + (pb.negative||0) + ' net=' + (pb.net_sentiment||0) + '\n' +
+    '- Sentiment for ' + brand + ' only: pos=' + (pb.positive||0) + ' neu=' + (pb.neutral||0) + ' neg=' + (pb.negative||0) + ' net=' + (pb.net_sentiment||0) + ' (out of ' + (pb.positive||0)+(pb.neutral||0)+(pb.negative||0) + ' scored mentions)\n' +
     '- Themes: ' + (themes||'none') + '\n' +
     '- Retailer sentiment: Walmart=' + (retailSent.walmart||'no data') + ' Target=' + (retailSent.target||'no data') + ' Kohls=' + (retailSent.kohls||'no data') + '\n' +
     '- Customer testimonials:\n' + (testimonials||'none found') + '\n' +

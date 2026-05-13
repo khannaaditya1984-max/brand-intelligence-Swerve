@@ -1,5 +1,6 @@
 /* ================================================================
-   agents.js — Three Claude-powered agents
+   agents.js — Brand Intelligence Agents
+   Searches: web news, social platforms, retailer pages, reviews
    ================================================================ */
 
 function sleep(ms) {
@@ -26,22 +27,13 @@ async function callClaude(messages, tools, maxTokens) {
   return data;
 }
 
-/* Extract ALL content blocks including tool results from a response */
-function extractAllText(data) {
-  var parts = [];
-  (data.content || []).forEach(function(block) {
-    if (block.type === 'text') parts.push(block.text);
-    if (block.type === 'tool_result') {
-      (block.content || []).forEach(function(c) { if (c.text) parts.push(c.text); });
-    }
-  });
-  return parts.join('\n');
+function getTextFromResponse(data) {
+  return ((data.content || []).filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('\n'));
 }
 
-/* Aggressively extract all JSON objects from any text */
-function extractAllObjects(text) {
-  var results = [];
-  var i = 0;
+/* Walk text extracting every valid JSON object */
+function extractObjects(text) {
+  var results = [], i = 0;
   while (i < text.length) {
     if (text[i] === '{') {
       var depth = 0, inStr = false, esc = false, start = i;
@@ -60,194 +52,294 @@ function extractAllObjects(text) {
   return results;
 }
 
-/* Search one brand and return mentions with brand forced */
-async function searchBrand(brandName, isPrimary, onTrace) {
-  var year = new Date().getFullYear();
-  var count = isPrimary ? '5' : '3';
-
-  var prompt =
-    'Search for "' + brandName + ' ' + year + '" and find ' + count + ' recent news articles or mentions.\n\n' +
-    'After searching, list your results as a JSON array only:\n' +
-    '[{"source":"outlet name","channel":"web","title":"article title","snippet":"brief paraphrase under 12 words","url":"full url","date":"YYYY-MM-DD"}]\n\n' +
-    'JSON array only. No other text.';
-
-  var data = await callClaude(
-    [{ role: 'user', content: prompt }],
-    [{ type: 'web_search_20250305', name: 'web_search' }],
-    isPrimary ? 1500 : 1000
-  );
-
-  var raw = extractAllText(data);
-  console.log('[' + brandName + '] raw length:', raw.length);
-  console.log('[' + brandName + '] raw preview:', raw.slice(0, 300));
-
-  /* Try standard safeParse first */
-  var found = safeParse(raw, [], true);
-
-  /* If that fails, extract individual objects */
-  if (!Array.isArray(found) || found.length === 0) {
-    var objs = extractAllObjects(raw);
-    found = objs.filter(function(o) { return o.title || o.source; });
-    if (found.length > 0) {
-      console.log('[' + brandName + '] recovered ' + found.length + ' objects via aggressive parse');
+function parseResponse(raw, expectArray) {
+  var cleaned = raw.replace(/```json|```/g, '').trim();
+  // Try direct parse first
+  var so = cleaned.indexOf('{'), sa = cleaned.indexOf('[');
+  var first = sa !== -1 && (so === -1 || sa < so) ? sa : so;
+  if (first !== -1) {
+    var open = cleaned[first], close = open === '{' ? '}' : ']';
+    var depth = 0, inStr = false, esc = false, end = -1;
+    for (var i = first; i < cleaned.length; i++) {
+      var c = cleaned[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === open) depth++;
+      else if (c === close) { depth--; if (depth === 0) { end = i; break; } }
     }
+    if (end !== -1) { try { return JSON.parse(cleaned.slice(first, end + 1)); } catch(e) {} }
   }
+  // Fallback: extract objects
+  if (expectArray) {
+    var objs = extractObjects(cleaned);
+    if (objs.length > 0) return objs;
+  }
+  return null;
+}
 
+/* Run one web_search call and return parsed mention array */
+async function runSearch(searchPrompt, brandName, maxTok) {
+  var data = await callClaude(
+    [{ role: 'user', content: searchPrompt }],
+    [{ type: 'web_search_20250305', name: 'web_search' }],
+    maxTok || 1200
+  );
+  var raw = getTextFromResponse(data);
+  console.log('[' + brandName + '] raw:', raw.slice(0, 200));
+  var found = parseResponse(raw, true);
+  if (!Array.isArray(found)) {
+    var objs = extractObjects(raw);
+    found = objs.filter(function(o) { return o.title || o.source; });
+  }
   if (!Array.isArray(found)) found = [];
-
-  /* Force brand on every result */
-  found = found
-    .filter(function(m) { return m && (m.title || m.source); })
-    .map(function(m) {
-      return {
-        brand:   brandName,
-        source:  m.source || 'Unknown',
-        channel: m.channel || 'web',
-        title:   m.title  || '',
-        snippet: m.snippet || '',
-        url:     m.url    || '',
-        date:    m.date   || ''
-      };
-    });
-
-  onTrace(brandName + ': ' + found.length + ' mentions');
-  return found;
+  return found.filter(function(m) { return m && (m.title || m.source); }).map(function(m) {
+    return {
+      brand:   brandName,
+      source:  m.source  || 'Unknown',
+      channel: m.channel || 'web',
+      type:    m.type    || 'news',
+      title:   m.title   || '',
+      snippet: m.snippet || '',
+      url:     m.url     || '',
+      date:    m.date    || ''
+    };
+  });
 }
 
 /* ── AGENT 01: FIELD OPERATIVE ── */
 async function agentScrape(brand, competitors, onTrace) {
-  onTrace('Dispatching agents');
+  onTrace('Starting intelligence sweep');
+  var year = new Date().getFullYear();
   var allMentions = [];
+  var schema = '{"source":"<name>","channel":"web"|"social","type":"news"|"social"|"review"|"retail","title":"<title>","snippet":"<paraphrased 12 words>","url":"<url>","date":"<YYYY-MM-DD or empty>"}';
 
-  /* Primary brand */
-  var primary = await searchBrand(brand, true, onTrace);
-  allMentions = allMentions.concat(primary);
+  // ── 1. News & web mentions for primary brand ──
+  onTrace('Searching news: ' + brand);
+  var newsResults = await runSearch(
+    'Search for recent news articles about "' + brand + '" in ' + year + '. Run 2 searches.\n' +
+    'Output ONLY a JSON array. Each item: ' + schema + '\nSet channel="web" type="news". Max 5 items. Paraphrase snippets.',
+    brand, 1500
+  );
+  allMentions = allMentions.concat(newsResults);
+  onTrace('News: ' + newsResults.length + ' results');
 
-  /* Each competitor with a pause */
+  await sleep(10000);
+
+  // ── 2. Social media mentions ──
+  onTrace('Searching social: Reddit, TikTok, YouTube');
+  var socialResults = await runSearch(
+    'Search for "' + brand + '" mentions on Reddit site:reddit.com, then "' + brand + '" TikTok reviews, then "' + brand + '" YouTube review ' + year + '.\n' +
+    'Output ONLY a JSON array. Each item: ' + schema + '\nSet channel="social". Include platform as source (Reddit/TikTok/YouTube). Max 5 items. Paraphrase snippets.',
+    brand, 1500
+  );
+  allMentions = allMentions.concat(socialResults);
+  onTrace('Social: ' + socialResults.length + ' results');
+
+  await sleep(10000);
+
+  // ── 3. Retailer mentions (Walmart, Target, Kohls) ──
+  onTrace('Searching retailers: Walmart, Target, Kohls');
+  var retailResults = await runSearch(
+    'Search for "' + brand + ' walmart", then "' + brand + ' target", then "' + brand + ' kohls".\n' +
+    'Output ONLY a JSON array. Each item: ' + schema + '\nSet channel="web" type="retail". Source = the retailer name. Max 5 items. Paraphrase snippets.',
+    brand, 1500
+  );
+  allMentions = allMentions.concat(retailResults);
+  onTrace('Retail: ' + retailResults.length + ' results');
+
+  await sleep(10000);
+
+  // ── 4. Customer reviews & testimonials ──
+  onTrace('Searching reviews & testimonials');
+  var reviewResults = await runSearch(
+    'Search for "' + brand + ' review" customer opinions, then "' + brand + ' reddit review" user experiences.\n' +
+    'Output ONLY a JSON array. Each item: ' + schema + '\nSet channel="social" type="review". Focus on genuine customer quotes and experiences. Max 5 items. Paraphrase snippets.',
+    brand, 1500
+  );
+  allMentions = allMentions.concat(reviewResults);
+  onTrace('Reviews: ' + reviewResults.length + ' results');
+
+  // ── 5. Competitors (with pause) ──
   for (var i = 0; i < competitors.length; i++) {
-    onTrace('Waiting 12s before ' + competitors[i] + '...');
+    var comp = competitors[i];
+    onTrace('Pausing 12s then searching: ' + comp);
     await sleep(12000);
-    var compResults = await searchBrand(competitors[i], false, onTrace);
+    var compResults = await runSearch(
+      'Search for recent news about "' + comp + '" in ' + year + '. Run 1 search.\n' +
+      'Output ONLY a JSON array. Each item: ' + schema + '\nMax 3 items. Paraphrase snippets.',
+      comp, 800
+    );
     allMentions = allMentions.concat(compResults);
+    onTrace(comp + ': ' + compResults.length + ' results');
   }
 
-  if (allMentions.length === 0) {
-    throw new Error('No mentions found for any brand. Check browser console (F12) for raw API responses.');
-  }
+  if (allMentions.length === 0) throw new Error('No mentions found. Check browser console.');
 
-  /* Final breakdown */
+  // Final count
   var allBrands = [brand].concat(competitors);
   var counts = {};
   allBrands.forEach(function(b) { counts[b] = 0; });
   allMentions.forEach(function(m) { counts[m.brand] = (counts[m.brand] || 0) + 1; });
-  onTrace('Totals: ' + allBrands.map(function(b) { return b + '=' + counts[b]; }).join(', '));
+  onTrace('Total: ' + allMentions.length + ' — ' + allBrands.map(function(b) { return b + '=' + (counts[b]||0); }).join(', '));
+
+  // Type breakdown
+  var byType = {};
+  allMentions.forEach(function(m) { byType[m.type] = (byType[m.type]||0)+1; });
+  onTrace('Types: ' + Object.keys(byType).map(function(t) { return t+'='+byType[t]; }).join(', '));
 
   return allMentions;
 }
 
-/* ── AGENT 02: SENTIMENT ANALYST ── */
+/* ── AGENT 02: SENTIMENT + SOV ── */
 async function agentSentiment(brand, competitors, mentions, onTrace) {
-  onTrace('Waiting 12s before sentiment...');
+  onTrace('Pausing 12s before sentiment...');
   await sleep(12000);
   onTrace('Scoring sentiment');
 
   var allBrands = [brand].concat(competitors);
 
-  /* Count per brand — source of truth for SoV */
+  // Count per brand — source of truth
   var counts = {};
   allBrands.forEach(function(b) { counts[b] = 0; });
   mentions.forEach(function(m) {
-    var matched = allBrands.find(function(b) { return b.toLowerCase() === (m.brand || '').toLowerCase(); });
+    var matched = allBrands.find(function(b) { return b.toLowerCase() === (m.brand||'').toLowerCase(); });
     if (matched) counts[matched]++;
   });
   var total = mentions.length || 1;
+  onTrace('Counts: ' + allBrands.map(function(b) { return b+'='+counts[b]; }).join(', '));
 
-  /* Pipe-separated list for model to score */
-  var lines = mentions.slice(0, 15).map(function(m, i) {
-    return i + '|' + m.brand + '|' + (m.snippet || m.title || '').slice(0, 60);
+  // Score only primary brand mentions
+  var primaryMentions = mentions.filter(function(m) {
+    return m.brand && m.brand.toLowerCase() === brand.toLowerCase();
+  });
+  var lines = primaryMentions.slice(0, 15).map(function(m, i) {
+    return i + '|' + (m.type||'news') + '|' + (m.snippet || m.title || '').slice(0, 70);
   }).join('\n');
 
+  // Extract testimonials separately
+  var testimonials = mentions.filter(function(m) {
+    return m.brand.toLowerCase() === brand.toLowerCase() && (m.type === 'review' || m.channel === 'social');
+  }).slice(0, 8);
+
   var prompt =
-    'Score the sentiment of each of these brand mentions.\n\n' +
+    'Score sentiment for these ' + brand + ' mentions:\n\n' +
     lines + '\n\n' +
-    'Return ONLY JSON:\n' +
-    '{"scored":[{"index":0,"brand":"x","sentiment":"positive","score":0.5,"rationale":"reason"}],' +
-    '"themes":[{"theme":"topic","sentiment":"positive","frequency":1}]}\n\n' +
-    'Base scores on the text only. Max 4 themes for ' + brand + ' only.';
+    'Return ONLY valid JSON:\n' +
+    '{"scored":[{"index":0,"type":"news","sentiment":"positive","score":0.5,"rationale":"reason from text"}],' +
+    '"themes":[{"theme":"topic","sentiment":"positive","frequency":2}],' +
+    '"retail_sentiment":{"walmart":"positive"|"neutral"|"negative"|"no data",' +
+      '"target":"positive"|"neutral"|"negative"|"no data",' +
+      '"kohls":"positive"|"neutral"|"negative"|"no data"},' +
+    '"top_testimonials":[{"quote":"paraphrased customer sentiment","sentiment":"positive","source":"platform"}]}\n\n' +
+    'Rules: score from text only. Max 4 themes. Max 3 testimonials from review/social mentions. retail_sentiment from any retail mentions found.';
 
   var data = await callClaude([{ role: 'user', content: prompt }], null, 1500);
-  var result = safeParse(extractAllText(data), null);
-
+  var result = parseResponse(getTextFromResponse(data), false);
   if (!result || !result.scored) {
-    /* Try object extraction fallback */
-    var objs = extractAllObjects(extractAllText(data));
-    result = objs.find(function(o) { return o.scored; }) || null;
-    if (!result) throw new Error('Sentiment analyst failed. Check browser console.');
+    var objs = extractObjects(getTextFromResponse(data));
+    result = objs.find(function(o) { return o.scored; }) || { scored: [], themes: [] };
   }
 
-  /* SoV — computed entirely in code */
+  // Add testimonials from raw data if model missed them
+  if (!result.top_testimonials || result.top_testimonials.length === 0) {
+    result.top_testimonials = testimonials.slice(0, 3).map(function(m) {
+      return { quote: m.snippet || m.title, sentiment: 'positive', source: m.source };
+    });
+  }
+
+  // Compute SoV in code
   result.share_of_voice = allBrands.map(function(b) {
     var c = counts[b] || 0;
-    return { brand: b, mention_count: c, percent: parseFloat(((c / total) * 100).toFixed(1)) };
+    return { brand: b, mention_count: c, percent: parseFloat(((c/total)*100).toFixed(1)) };
   });
 
-  /* Sentiment breakdown — computed from scored results */
+  // Compute sentiment breakdown in code
   var breakdown = {};
-  allBrands.forEach(function(b) { breakdown[b] = { positive: 0, neutral: 0, negative: 0, net_sentiment: 0 }; });
-  (result.scored || []).forEach(function(s) {
-    var b = allBrands.find(function(ab) { return ab.toLowerCase() === (s.brand || '').toLowerCase(); });
-    if (b && s.sentiment && breakdown[b]) breakdown[b][s.sentiment]++;
+  allBrands.forEach(function(b) { breakdown[b] = { positive:0, neutral:0, negative:0, net_sentiment:0 }; });
+  (result.scored||[]).forEach(function(s) {
+    var bd = breakdown[brand];
+    if (bd && s.sentiment) bd[s.sentiment]++;
   });
   allBrands.forEach(function(b) {
-    var bd = breakdown[b], t = (bd.positive + bd.neutral + bd.negative) || 1;
-    bd.net_sentiment = parseFloat(((bd.positive - bd.negative) / t).toFixed(2));
+    var bd = breakdown[b], t = (bd.positive+bd.neutral+bd.negative)||1;
+    bd.net_sentiment = parseFloat(((bd.positive-bd.negative)/t).toFixed(2));
   });
   result.sentiment_breakdown = breakdown;
 
-  /* Channel split — from raw data */
   result.channel_split = {
-    web:    mentions.filter(function(m) { return m.channel === 'web'; }).length,
-    social: mentions.filter(function(m) { return m.channel === 'social'; }).length
+    web:    mentions.filter(function(m) { return m.channel==='web'; }).length,
+    social: mentions.filter(function(m) { return m.channel==='social'; }).length
+  };
+
+  result.type_split = {
+    news:   mentions.filter(function(m) { return m.type==='news'; }).length,
+    social: mentions.filter(function(m) { return m.type==='social'; }).length,
+    review: mentions.filter(function(m) { return m.type==='review'; }).length,
+    retail: mentions.filter(function(m) { return m.type==='retail'; }).length
   };
 
   result.share_of_voice.forEach(function(s) {
     onTrace('SoV ' + s.brand + ': ' + s.percent + '% (' + s.mention_count + ')');
   });
+  onTrace('Types: news=' + result.type_split.news + ' social=' + result.type_split.social + ' reviews=' + result.type_split.review + ' retail=' + result.type_split.retail);
   onTrace('Analysis complete');
   return result;
 }
 
 /* ── AGENT 03: BUREAU CHIEF ── */
 async function agentReport(brand, competitors, mentions, analysis, onTrace) {
-  onTrace('Waiting 12s before report...');
+  onTrace('Pausing 12s before report...');
   await sleep(12000);
   onTrace('Writing report');
 
   var today  = todayFormatted();
-  var sov    = (analysis.share_of_voice || []).map(function(s) { return s.brand + ': ' + s.percent + '% (' + s.mention_count + ')'; }).join(', ');
-  var pb     = (analysis.sentiment_breakdown || {})[brand] || {};
-  var themes = (analysis.themes || []).map(function(t) { return t.theme; }).join(', ');
+  var sov    = (analysis.share_of_voice||[]).map(function(s) { return s.brand+': '+s.percent+'% ('+s.mention_count+')'; }).join(', ');
+  var pb     = (analysis.sentiment_breakdown||{})[brand] || {};
+  var themes = (analysis.themes||[]).map(function(t) { return t.theme+'('+t.sentiment+')'; }).join(', ');
+  var retailSent = analysis.retail_sentiment || {};
+  var testimonials = (analysis.top_testimonials||[]).map(function(t) { return '"'+t.quote+'" — '+t.source; }).join('\n');
+  var typeSplit = analysis.type_split || {};
 
   var prompt =
-    'Write a brand intelligence briefing for "' + brand + '" (date: ' + today + ').\n\n' +
-    'Data:\n' +
-    '- Total mentions: ' + mentions.length + '\n' +
+    'Brand intelligence briefing for "' + brand + '" — ' + today + '.\n\n' +
+    'DATA:\n' +
+    '- Total mentions: ' + mentions.length + ' (news=' + (typeSplit.news||0) + ' social=' + (typeSplit.social||0) + ' reviews=' + (typeSplit.review||0) + ' retail=' + (typeSplit.retail||0) + ')\n' +
     '- Share of Voice: ' + sov + '\n' +
-    '- ' + brand + ' sentiment: positive=' + (pb.positive||0) + ' neutral=' + (pb.neutral||0) + ' negative=' + (pb.negative||0) + ' net=' + (pb.net_sentiment||0) + '\n' +
-    '- Themes: ' + (themes || 'none') + '\n' +
-    (competitors.length ? '- Competitors tracked: ' + competitors.join(', ') + '\n' : '') +
+    '- Sentiment: pos=' + (pb.positive||0) + ' neu=' + (pb.neutral||0) + ' neg=' + (pb.negative||0) + ' net=' + (pb.net_sentiment||0) + '\n' +
+    '- Themes: ' + (themes||'none') + '\n' +
+    '- Retailer sentiment: Walmart=' + (retailSent.walmart||'no data') + ' Target=' + (retailSent.target||'no data') + ' Kohls=' + (retailSent.kohls||'no data') + '\n' +
+    '- Customer testimonials:\n' + (testimonials||'none found') + '\n' +
+    (competitors.length ? '- Competitors: ' + competitors.join(', ') + '\n' : '') +
     '\nReturn ONLY valid JSON:\n' +
-    '{"headline":"<sentence>","executive_summary":"<2 sentences>",' +
-    '"key_findings":["<f1>","<f2>","<f3>"],"share_of_voice_analysis":"<2 sentences with the exact % numbers>",' +
-    '"sentiment_analysis":"<2 sentences>","themes_analysis":"<1 sentence>",' +
-    '"competitive_positioning":"<2 sentences>","recent_highlights":["<h1>","<h2>","<h3>"],' +
-    '"earned_media_note":"<1 sentence>","risks":["<r1>","<r2>"],' +
-    '"opportunities":["<o1>","<o2>"],"recommendations":["<rec1>","<rec2>","<rec3>"]}';
+    '{\n' +
+    '  "headline": "<one punchy sentence>",\n' +
+    '  "executive_summary": "<2 sentences present tense>",\n' +
+    '  "key_findings": ["<finding with numbers>","<finding>","<finding>"],\n' +
+    '  "share_of_voice_analysis": "<2 sentences with exact %s>",\n' +
+    '  "sentiment_analysis": "<2 sentences with exact numbers>",\n' +
+    '  "themes_analysis": "<1 sentence>",\n' +
+    '  "competitive_positioning": "<2 sentences vs ' + (competitors.join(', ')||'market') + '>",\n' +
+    '  "testimonial_insights": "<2 sentences summarising what real customers say — use the testimonials above>",\n' +
+    '  "retail_analysis": "<2 sentences on Walmart/Target/Kohls performance and opportunities>",\n' +
+    '  "recent_highlights": ["<highlight>","<highlight>","<highlight>"],\n' +
+    '  "earned_media_note": "<1 sentence>",\n' +
+    '  "risks": ["<risk>","<risk>"],\n' +
+    '  "opportunities": ["<opp>","<opp>"],\n' +
+    '  "marketing_recommendations": [\n' +
+    '    {"channel":"Retail Media (Walmart Connect / Target Roundel / Kohls)","recommendation":"<specific sponsored product or display placement strategy with audience targeting based on retailer data>","rationale":"<why based on retailer sentiment data>"},\n' +
+    '    {"channel":"Paid Social — Meta & TikTok","recommendation":"<specific campaign idea with audience segments, ad formats, and messaging hooks drawn from themes and testimonials>","rationale":"<why>"},\n' +
+    '    {"channel":"Google Search & Shopping","recommendation":"<specific keyword strategy, bidding approach, and product listing optimisation based on how customers search>","rationale":"<why>"},\n' +
+    '    {"channel":"Creative Direction","recommendation":"<specific ad creative hooks and messaging angles drawn directly from the customer testimonials found — what to say, how to say it>","rationale":"<why based on testimonials>"},\n' +
+    '    {"channel":"Programmatic & Retargeting","recommendation":"<specific display retargeting strategy — audience segments, messaging by funnel stage, placements>","rationale":"<why>"}\n' +
+    '  ]\n' +
+    '}';
 
-  var data   = await callClaude([{ role: 'user', content: prompt }], null, 1500);
-  var report = safeParse(extractAllText(data), null);
+  var data   = await callClaude([{ role: 'user', content: prompt }], null, 2000);
+  var report = parseResponse(getTextFromResponse(data), false);
   if (!report) {
-    var objs = extractAllObjects(extractAllText(data));
+    var objs = extractObjects(getTextFromResponse(data));
     report = objs.find(function(o) { return o.headline; }) || null;
     if (!report) throw new Error('Report generation failed. Check browser console.');
   }
